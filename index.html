@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Medicine Reminder (Offline)</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+    body{margin:0;background:#f6f7fb;color:#111;display:flex;flex-direction:column;min-height:100vh}
+    header{background:linear-gradient(135deg,#6dd3f4,#8b7cf6);color:white;padding:18px 16px;border-bottom-left-radius:18px;border-bottom-right-radius:18px}
+    h1{margin:0;font-size:20px}
+    main{flex:1;padding:14px;max-width:900px;margin:0 auto;width:100%}
+    .card{background:white;border-radius:12px;box-shadow:0 6px 18px rgba(20,20,50,0.06);padding:12px;margin-bottom:12px}
+    label{display:block;font-size:13px;margin-bottom:6px;color:#333}
+    input,select,textarea{width:100%;padding:8px;border-radius:8px;border:1px solid #e3e6f0;margin-bottom:10px;box-sizing:border-box}
+    .row{display:flex;gap:8px}
+    .row > *{flex:1}
+    button{background:#5b6df6;color:white;padding:10px 12px;border-radius:10px;border:0;font-weight:600}
+    .small{font-size:13px;color:#555}
+    ul{list-style:none;padding:0;margin:0}
+    li.med{display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:10px;border:1px solid #eef1ff;margin-bottom:8px;background:linear-gradient(180deg,#fff,#fbfdff)}
+    .times{font-size:13px;color:#444;margin-top:6px}
+    .pill-actions button{margin-left:8px;padding:6px 8px;border-radius:8px;border:0;background:#e6e9ff;color:#253;cursor:pointer}
+    .pill-actions button.delete{background:#ffdede;color:#880}
+    footer{padding:12px;text-align:center;font-size:13px;color:#666}
+    .muted{color:#777;font-size:13px}
+    @media(min-width:640px){main{padding:24px}}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Medicine Reminder</h1>
+    <div class="small">Add medicines, times, and get browser reminders. Works on mobile browsers (best with HTTPS).</div>
+  </header>
+  <main>
+    <div class="card" id="addForm">
+      <label for="name">Medicine name</label>
+      <input id="name" placeholder="e.g., Paracetamol" />
+      
+    <div class="row">
+      <div style="flex:2">
+        <label for="times">Times (12h AM/PM) — comma separated</label>
+        <input id="times" placeholder="e.g., 08:00, 13:30, 21:00" />
+      </div>
+      <div style="flex:1">
+        <label for="dose">Dose / notes</label>
+        <input id="dose" placeholder="e.g., 1 tablet" />
+      </div>
+    </div>
+    
+      <div class="row">
+        <div>
+          <label for="start">Start date</label>
+          <input id="start" type="date" />
+        </div>
+        <div>
+          <label for="end">End date (optional)</label>
+          <input id="end" type="date" />
+        </div>
+      </div>
+      <label for="repeat">Repeat</label>
+      <select id="repeat">
+        <option value="daily">Daily</option>
+        <option value="custom">Custom (n days)</option>
+      </select>
+      <input id="customRepeat" type="number" placeholder="Enter every N days (e.g., 2)" style="display:none" min="1" />
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="addBtn">Add medicine</button>
+        <button id="notifyPerm" style="background:#2db55b">Request Notification</button>
+      </div>
+      <div class="small muted" style="margin-top:8px">
+        Notes: Browser notifications require permission and HTTPS (or localhost). If notifications don't show on mobile, try Chrome/Edge on Android and allow notifications. You can add this page to Home Screen for quicker access.
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px 0">Your medicines</h3>
+      <ul id="medList"></ul>
+      <div id="empty" class="small muted">No medicines yet — add one above.</div>
+    </div>
+
+    <div class="card">
+      <h3>Quick actions</h3>
+      <button id="checkNow">Check now (test)</button>
+      <button id="clearAll" style="background:#ff7b7b;margin-left:8px">Clear all</button>
+      <div class="small muted" style="margin-top:8px">The app uses your device clock to trigger reminders. Keep the page open or add to homescreen for best results.</div>
+    </div>
+  </main>
+  <footer>Built for offline/mobile use • Data kept in your browser</footer>
+
+<script>
+// Simple medicine reminder using localStorage and Notification API.
+// Key functions: add/edit/delete medicine, check every 30s for due reminders.
+// Data model: array of {id, name, times:[HH:MM], dose, start, end, repeatDays, lastNotifiedDates: {dateTimeKey:true} }
+// dateTimeKey is ISO date + ' ' + time to avoid duplicate notifications in same minute
+
+const LS_KEY = 'med_reminder_v1';
+let meds = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+
+const el = id => document.getElementById(id);
+const render = () => {
+  const list = el('medList'); list.innerHTML='';
+  if(!meds.length){ el('empty').style.display='block'; return; } else el('empty').style.display='none';
+  meds.forEach(m => {
+    const li = document.createElement('li'); li.className='med';
+    const left = document.createElement('div');
+    left.innerHTML = `<strong>${escapeHtml(m.name)}</strong><div class="small">${escapeHtml(m.dose||'')}</div>
+      <div class="times">${m.times.join(', ')} • ${m.repeatText || 'daily'}</div>`;
+    const right = document.createElement('div'); right.style.display='flex'; right.style.alignItems='center';
+    right.className='pill-actions';
+    const takeBtn = document.createElement('button'); takeBtn.textContent='Taken'; takeBtn.onclick = ()=>markTaken(m.id);
+    const delBtn = document.createElement('button'); delBtn.textContent='Delete'; delBtn.className='delete'; delBtn.onclick = ()=>{ if(confirm('Delete medicine?')){ deleteMed(m.id); } };
+    right.appendChild(takeBtn); right.appendChild(delBtn);
+    li.appendChild(left); li.appendChild(right);
+    list.appendChild(li);
+  });
+};
+
+function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function save(){ localStorage.setItem(LS_KEY, JSON.stringify(meds)); render(); }
+
+function addMed(obj){
+  obj.id = Date.now() + Math.random().toString(36).slice(2,8);
+  obj.times = obj.times.map(t=>t.trim()).filter(Boolean);
+  obj.lastNotified = obj.lastNotified || {};
+  obj.repeatText = obj.repeatText || 'daily';
+  meds.push(obj); save();
+}
+
+function deleteMed(id){ meds = meds.filter(m=>m.id!==id); save(); }
+
+function markTaken(id){
+  const m = meds.find(x=>x.id===id); if(!m) return;
+  const now = new Date(); const key = now.toISOString().slice(0,10) + ' ' + now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+  m.lastNotified = m.lastNotified || {}; m.lastNotified[key] = true; save();
+  alert('Marked as taken for now.');
+}
+
+el('repeat').addEventListener('change', e=>{ el('customRepeat').style.display = e.target.value==='custom' ? 'block' : 'none'; });
+
+el('notifyPerm').addEventListener('click', async ()=>{
+  if(!('Notification' in window)){ alert('Notifications are not supported by this browser.'); return; }
+  const p = await Notification.requestPermission();
+  alert('Notification permission: '+p);
+});
+
+el('addBtn').addEventListener('click', ()=>{
+  const name = el('name').value.trim(); if(!name){ alert('Add a name'); return; }
+  const timesRaw = el('times').value.trim();
+  const times = timesRaw.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!times.length){ alert('Add at least one time (e.g., 08:00)'); return; }
+  const dose = el('dose').value.trim();
+  const start = el('start').value || (new Date()).toISOString().slice(0,10);
+  const end = el('end').value || '';
+  const repeat = el('repeat').value;
+  let repeatDays = 1;
+  if(repeat==='custom'){ repeatDays = parseInt(el('customRepeat').value)||1; }
+  addMed({name,times,dose,start,end,repeatDays,repeatText: repeat==='daily' ? 'daily' : 'every '+repeatDays+' days'});
+  el('name').value=''; el('times').value=''; el('dose').value=''; el('start').value=''; el('end').value=''; el('customRepeat').value='';
+  alert('Medicine added');
+});
+
+el('clearAll').addEventListener('click', ()=>{ if(confirm('Clear all medicines?')){ meds=[]; save(); } });
+
+el('checkNow').addEventListener('click', ()=>{ checkDue(true); });
+
+function isDateInRange(d, start, end){
+  const s = new Date(start+'T00:00:00'); if(end){ const e = new Date(end+'T23:59:59'); return d>=s && d<=e; } return d>=s;
+}
+
+function checkDue(isManual=false){
+  const now = new Date();
+  const nowDate = now.toISOString().slice(0,10);
+  const nowTime = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+  meds.forEach(m => {
+    try{
+      // check date range
+      if(!isDateInRange(now, m.start || nowDate, m.end || '')) return;
+      // repeat logic: if repeatDays>1, compute days since start
+      if(m.repeatDays && m.repeatDays>1){
+        const s = new Date((m.start||nowDate) + 'T00:00:00');
+        const diffDays = Math.floor((new Date(now.getFullYear(),now.getMonth(),now.getDate()) - new Date(s.getFullYear(),s.getMonth(),s.getDate()))/86400000);
+        if(diffDays % m.repeatDays !== 0) return;
+      }
+      // match times (exact minute)
+      m.times.forEach(t=>{
+        if(t === nowTime){
+          const key = nowDate + ' ' + nowTime;
+          m.lastNotified = m.lastNotified || {};
+          if(!m.lastNotified[key]){
+            // notify
+            showNotification(`${m.name} — ${m.dose || ''}`, {body: `Time: ${t}`});
+            m.lastNotified[key]=true;
+            save();
+          } else if(isManual){
+            // manual check forced — still show a test if already notified
+            showNotification(`${m.name} — (test) ${m.dose || ''}`, {body: `Time: ${t}`});
+          }
+        }
+      });
+    }catch(err){ console.error(err); }
+  });
+}
+
+// request permission and show notification fallback
+async function showNotification(title, opts){
+  if("Notification" in window && Notification.permission === "granted"){
+    try{
+      new Notification(title, opts);
+    }catch(e){
+      console.warn('Notification error',e);
+      alert(title + "\n" + (opts && opts.body ? opts.body : ''));
+    }
+  } else {
+    alert(title + "\n" + (opts && opts.body ? opts.body : ''));
+  }
+}
+
+// check every 20 seconds to catch minute changes quickly
+setInterval(checkDue, 20000);
+// Also run on load
+render();
+checkDue();
+
+// expose for debugging
+window._meds = meds;
+
+// convert '08:30 AM' or '01:45 PM' to 'HH:MM' 24-hour format
+function parseTime12to24(t){
+    t = t.trim().toUpperCase();
+    if(!t) return null;
+    const m = t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+    if(!m) return null;
+    let h = parseInt(m[1],10);
+    const min = m[2];
+    const ampm = m[3];
+    if(ampm==='PM' && h<12) h+=12;
+    if(ampm==='AM' && h===12) h=0;
+    return h.toString().padStart(2,'0')+':'+min;
+}
+
+// override adding med to parse times from 12h to 24h
+const origAddBtnClick = el('addBtn').onclick || function(){};
+el('addBtn').onclick = function(){
+    const name = el('name').value.trim(); if(!name){ alert('Add a name'); return; }
+    const timesRaw = el('times').value.trim();
+    let times = timesRaw.split(',').map(s=>parseTime12to24(s)).filter(Boolean);
+    if(!times.length){ alert('Add at least one valid time (e.g., 08:00 AM)'); return; }
+    const dose = el('dose').value.trim();
+    const start = el('start').value || (new Date()).toISOString().slice(0,10);
+    const end = el('end').value || '';
+    const repeat = el('repeat').value;
+    let repeatDays = 1;
+    if(repeat==='custom'){ repeatDays = parseInt(el('customRepeat').value)||1; }
+    addMed({name,times,dose,start,end,repeatDays,repeatText: repeat==='daily' ? 'daily' : 'every '+repeatDays+' days'});
+    el('name').value=''; el('times').value=''; el('dose').value=''; el('start').value=''; el('end').value=''; el('customRepeat').value='';
+    alert('Medicine added');
+};
+
+</script>
+</body>
+</html>
